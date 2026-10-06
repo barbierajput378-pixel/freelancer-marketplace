@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Freelancer Marketplace — DB Management System</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171d2b;
+    --border: #2a3245;
+    --accent: #5b8def;
+    --text: #e8ecf4;
+    --muted: #94a1b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
+
+  nav {
+    display: flex;
+    gap: 4px;
+    padding: 0 28px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  nav button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    padding: 12px 16px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    border-bottom: 2px solid transparent;
+  }
+  nav button.active {
+    color: var(--text);
+    border-bottom: 2px solid var(--accent);
+  }
+
+  main { padding: 24px 28px; max-width: 1100px; margin: 0 auto; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 1rem; color: var(--accent); }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .form-grid label {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .form-grid input {
+    width: 100%;
+    padding: 8px;
+    background: #10151f;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+  }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.action {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 9px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  button.action.secondary { background: #2a3245; }
+  button.action.danger { background: #d9534f; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  tr:hover { background: #1c2434; cursor: pointer; }
+
+  pre#dashboardOutput {
+    background: #10151f;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    max-height: 400px;
+    overflow: auto;
+    font-size: 0.8rem;
+  }
+  .status { font-size: 0.8rem; color: var(--muted); margin-top: 8px; min-height: 1em; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Freelancer Marketplace — Database Management System</h1>
+  <p>Assignment 9 · GUI-based 3-tier Database Application (Browser → API → MySQL)</p>
+</header>
+
+<nav id="tabNav"></nav>
+
+<main id="tabContent"></main>
+
+<script>
+const TABLES = {
+  Clients: { pk: "client_id", columns: ["client_id", "name", "email", "company_name"] },
+  Freelancers: { pk: "freelancer_id", columns: ["freelancer_id", "name", "email", "avg_rating"] },
+  Jobs: { pk: "job_id", columns: ["job_id", "client_id", "title", "budget_max", "status"] },
+  Offers: { pk: "offer_id", columns: ["offer_id", "job_id", "freelancer_id", "offer_amount", "proposed_duration", "status"] },
+  Contracts: { pk: "contract_id", columns: ["contract_id", "job_id", "freelancer_id", "final_amount", "status"] },
+};
+
+const nav = document.getElementById("tabNav");
+const content = document.getElementById("tabContent");
+
+function buildNav() {
+  Object.keys(TABLES).forEach((name, i) => {
+    const btn = document.createElement("button");
+    btn.textContent = name;
+    btn.dataset.tab = name;
+    if (i === 0) btn.classList.add("active");
+    btn.onclick = () => switchTab(name);
+    nav.appendChild(btn);
+  });
+  const dashBtn = document.createElement("button");
+  dashBtn.textContent = "Dashboard";
+  dashBtn.dataset.tab = "Dashboard";
+  dashBtn.onclick = () => switchTab("Dashboard");
+  nav.appendChild(dashBtn);
+}
+
+function switchTab(name) {
+  document.querySelectorAll("nav button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("active", t.id === "tab-" + name));
+}
+
+function buildTableTab(name, def) {
+  const tab = document.createElement("div");
+  tab.className = "tab";
+  tab.id = "tab-" + name;
+
+  const formFields = def.columns.map(col => `
+    <div>
+      <label>${col}</label>
+      <input type="text" id="${name}-${col}" />
+    </div>
+  `).join("");
+
+  tab.innerHTML = `
+    <div class="panel">
+      <h2>${name} — Entry Form</h2>
+      <div class="form-grid">${formFields}</div>
+      <div class="btn-row">
+        <button class="action" onclick="addRecord('${name}')">Add</button>
+        <button class="action secondary" onclick="updateRecord('${name}')">Update</button>
+        <button class="action danger" onclick="deleteRecord('${name}')">Delete</button>
+        <button class="action secondary" onclick="clearForm('${name}')">Clear Form</button>
+        <button class="action secondary" onclick="loadRecords('${name}')">Refresh Table</button>
+      </div>
+      <div class="status" id="${name}-status"></div>
+    </div>
+    <div class="panel">
+      <h2>${name} — Records</h2>
+      <table>
+        <thead><tr>${def.columns.map(c => `<th>${c}</th>`).join("")}</tr></thead>
+        <tbody id="${name}-tbody"></tbody>
+      </table>
+    </div>
+  `;
+  content.appendChild(tab);
+}
+
+function buildDashboardTab() {
+  const tab = document.createElement("div");
+  tab.className = "tab";
+  tab.id = "tab-Dashboard";
+  tab.innerHTML = `
+    <div class="panel">
+      <h2>Quick Reports</h2>
+      <div class="btn-row">
+        <button class="action secondary" onclick="runReport('open-high-budget')">Open Jobs (budget ≥ 70,000)</button>
+        <button class="action secondary" onclick="runReport('active-freelancers')">Freelancers with ≥1 Offer</button>
+        <button class="action secondary" onclick="runReport('completed-summary')">Completed Contracts Summary</button>
+      </div>
+      <pre id="dashboardOutput">Click a report button above.</pre>
+    </div>
+  `;
+  content.appendChild(tab);
+}
+
+async function runReport(type) {
+  const out = document.getElementById("dashboardOutput");
+  out.textContent = "Loading...";
+  try {
+    const res = await fetch(`/api/reports?type=${type}`);
+    const data = await res.json();
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    out.textContent = "Error: " + e.message;
+  }
+}
+
+function clearForm(name) {
+  TABLES[name].columns.forEach(c => {
+    document.getElementById(`${name}-${c}`).value = "";
+  });
+}
+
+function setStatus(name, msg, isError = false) {
+  const el = document.getElementById(`${name}-status`);
+  el.textContent = msg;
+  el.style.color = isError ? "#d9534f" : "#94a1b8";
+}
+
+function getFormValues(name) {
+  const obj = {};
+  TABLES[name].columns.forEach(c => {
+    obj[c] = document.getElementById(`${name}-${c}`).value.trim();
+  });
+  return obj;
+}
+
+async function loadRecords(name) {
+  const tbody = document.getElementById(`${name}-tbody`);
+  tbody.innerHTML = `<tr><td colspan="${TABLES[name].columns.length}">Loading...</td></tr>`;
+  try {
+    const res = await fetch(`/api/${name.toLowerCase()}`);
+    const rows = await res.json();
+    tbody.innerHTML = "";
+    rows.forEach(row => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = TABLES[name].columns.map(c => `<td>${row[c] ?? ""}</td>`).join("");
+      tr.onclick = () => {
+        TABLES[name].columns.forEach(c => {
+          document.getElementById(`${name}-${c}`).value = row[c] ?? "";
+        });
+      };
+      tbody.appendChild(tr);
+    });
+    setStatus(name, `Loaded ${rows.length} record(s).`);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="${TABLES[name].columns.length}">Error loading records.</td></tr>`;
+    setStatus(name, "Error: " + e.message, true);
+  }
+}
+
+async function addRecord(name) {
+  const body = getFormValues(name);
+  try {
+    const res = await fetch(`/api/${name.toLowerCase()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Insert failed");
+    setStatus(name, "Record added.");
+    clearForm(name);
+    loadRecords(name);
+  } catch (e) {
+    setStatus(name, "Error: " + e.message, true);
+  }
+}
+
+async function updateRecord(name) {
+  const body = getFormValues(name);
+  const pk = TABLES[name].pk;
+  const pkValue = body[pk];
+  if (!pkValue) return setStatus(name, `Enter ${pk} to identify the record.`, true);
+  try {
+    const res = await fetch(`/api/${name.toLowerCase()}?pk=${pkValue}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Update failed");
+    setStatus(name, `Updated (${data.affectedRows} row).`);
+    loadRecords(name);
+  } catch (e) {
+    setStatus(name, "Error: " + e.message, true);
+  }
+}
+
+async function deleteRecord(name) {
+  const pk = TABLES[name].pk;
+  const pkValue = document.getElementById(`${name}-${pk}`).value.trim();
+  if (!pkValue) return setStatus(name, `Enter ${pk} to identify the record.`, true);
+  if (!confirm(`Delete ${name} record where ${pk} = ${pkValue}?`)) return;
+  try {
+    const res = await fetch(`/api/${name.toLowerCase()}?pk=${pkValue}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Delete failed");
+    setStatus(name, `Deleted (${data.affectedRows} row).`);
+    clearForm(name);
+    loadRecords(name);
+  } catch (e) {
+    setStatus(name, "Error: " + e.message, true);
+  }
+}
+
+// ---- init ----
+buildNav();
+Object.entries(TABLES).forEach(([name, def]) => buildTableTab(name, def));
+buildDashboardTab();
+document.querySelector(".tab").classList.add("active");
+Object.keys(TABLES).forEach(name => loadRecords(name));
+</script>
+</body>
+</html>

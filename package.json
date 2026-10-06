@@ -1,0 +1,12 @@
+{
+  "name": "freelancer-marketplace-web",
+  "version": "1.0.0",
+  "description": "Assignment 9 - GUI based 3-tier Database Application (Vercel + Aiven MySQL)",
+  "main": "index.js",
+  "dependencies": {
+    "mysql2": "^3.11.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
