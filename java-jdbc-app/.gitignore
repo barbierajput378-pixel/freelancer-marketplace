@@ -1,0 +1,15 @@
+# Maven build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Compiled class files
+*.class
+
+# Environment files (never commit secrets)
+.env
+.env.*
+*.env

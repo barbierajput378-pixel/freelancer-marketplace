@@ -72,14 +72,18 @@
     color: var(--muted);
     margin-bottom: 4px;
   }
-  .form-grid input {
+  .form-grid input,
+  .form-grid select {
     width: 100%;
     padding: 8px;
     background: #10151f;
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text);
+    font-family: inherit;
+    font-size: 0.9rem;
   }
+  .form-grid select { cursor: pointer; }
 
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
   button.action {
@@ -131,8 +135,37 @@ const TABLES = {
   Contracts: { pk: "contract_id", columns: ["contract_id", "job_id", "freelancer_id", "final_amount", "status"] },
 };
 
+// Allowed status values per table (first entry is the default shown in the form).
+const STATUS_OPTIONS = {
+  Jobs: ["Open", "Awarded", "Completed", "Cancelled"],
+  Offers: ["Pending", "Selected", "Rejected"],
+  Contracts: ["In Progress", "Completed", "Cancelled"],
+};
+const STATUS_DEFAULT = { Jobs: "Open", Offers: "Pending", Contracts: "In Progress" };
+
+// Foreign-key columns -> the table (and label column) their dropdown is filled from.
+const FK = {
+  client_id: { table: "Clients", labelCol: "name" },
+  job_id: { table: "Jobs", labelCol: "title" },
+  freelancer_id: { table: "Freelancers", labelCol: "name" },
+};
+
+// Columns allowed to be left blank (everything else is required before sending).
+const OPTIONAL = { Freelancers: ["avg_rating"] };
+
+// Latest rows per table, used to fill foreign-key dropdowns and compute next ids.
+const cache = {};
+
 const nav = document.getElementById("tabNav");
 const content = document.getElementById("tabContent");
+
+// Decides how a given column is rendered in the entry form.
+function fieldType(name, col) {
+  if (col === TABLES[name].pk) return "pk";
+  if (col === "status" && STATUS_OPTIONS[name]) return "status";
+  if (FK[col]) return "fk";
+  return "text";
+}
 
 function buildNav() {
   Object.keys(TABLES).forEach((name, i) => {
@@ -157,17 +190,41 @@ function switchTab(name) {
     t.classList.toggle("active", t.id === "tab-" + name));
 }
 
+function buildField(name, col) {
+  const id = `${name}-${col}`;
+  const type = fieldType(name, col);
+  let control;
+  if (type === "status") {
+    const opts = STATUS_OPTIONS[name]
+      .map(s => `<option value="${s}">${s}</option>`).join("");
+    control = `<select id="${id}">${opts}</select>`;
+  } else if (type === "fk") {
+    // Options are filled from the database once the source table is loaded.
+    control = `<select id="${id}"><option value="">Loading…</option></select>`;
+  } else {
+    control = `<input type="text" id="${id}" />`;
+  }
+  return `<div><label>${col}</label>${control}</div>`;
+}
+
+// Extra workflow buttons for specific tables.
+function extraButtons(name) {
+  if (name === "Offers") {
+    return `<button class="action" onclick="awardOffer()">Award this offer</button>`;
+  }
+  if (name === "Contracts") {
+    return `<button class="action" onclick="setContractStatus('Completed')">Mark Completed</button>
+            <button class="action danger" onclick="setContractStatus('Cancelled')">Cancel</button>`;
+  }
+  return "";
+}
+
 function buildTableTab(name, def) {
   const tab = document.createElement("div");
   tab.className = "tab";
   tab.id = "tab-" + name;
 
-  const formFields = def.columns.map(col => `
-    <div>
-      <label>${col}</label>
-      <input type="text" id="${name}-${col}" />
-    </div>
-  `).join("");
+  const formFields = def.columns.map(col => buildField(name, col)).join("");
 
   tab.innerHTML = `
     <div class="panel">
@@ -177,6 +234,7 @@ function buildTableTab(name, def) {
         <button class="action" onclick="addRecord('${name}')">Add</button>
         <button class="action secondary" onclick="updateRecord('${name}')">Update</button>
         <button class="action danger" onclick="deleteRecord('${name}')">Delete</button>
+        ${extraButtons(name)}
         <button class="action secondary" onclick="clearForm('${name}')">Clear Form</button>
         <button class="action secondary" onclick="loadRecords('${name}')">Refresh Table</button>
       </div>
@@ -191,6 +249,39 @@ function buildTableTab(name, def) {
     </div>
   `;
   content.appendChild(tab);
+}
+
+// Fill a foreign-key <select> from the cached rows of its source table.
+function fillFkSelect(name, col) {
+  const src = FK[col];
+  const sel = document.getElementById(`${name}-${col}`);
+  if (!sel || !src) return;
+  const current = sel.value;
+  const rows = cache[src.table] || [];
+  const srcPk = TABLES[src.table].pk;
+  sel.innerHTML = `<option value="">— select —</option>` +
+    rows.map(r => `<option value="${r[srcPk]}">${r[srcPk]} — ${r[src.labelCol] ?? ""}</option>`).join("");
+  if (current) sel.value = current;
+}
+
+// After a source table changes, refresh every FK dropdown that points at it.
+function refreshDependents(sourceTable) {
+  Object.keys(TABLES).forEach(t => {
+    TABLES[t].columns.forEach(col => {
+      if (FK[col] && FK[col].table === sourceTable && col !== TABLES[t].pk) {
+        fillFkSelect(t, col);
+      }
+    });
+  });
+}
+
+// Pre-fill the primary-key box with the next free id (MAX + 1).
+function prefillNextId(name) {
+  const pk = TABLES[name].pk;
+  const rows = cache[name] || [];
+  const maxId = rows.reduce((m, r) => Math.max(m, Number(r[pk]) || 0), 0);
+  const el = document.getElementById(`${name}-${pk}`);
+  if (el) el.value = maxId + 1;
 }
 
 function buildDashboardTab() {
@@ -224,9 +315,15 @@ async function runReport(type) {
 }
 
 function clearForm(name) {
-  TABLES[name].columns.forEach(c => {
-    document.getElementById(`${name}-${c}`).value = "";
+  TABLES[name].columns.forEach(col => {
+    const el = document.getElementById(`${name}-${col}`);
+    if (fieldType(name, col) === "status") {
+      el.value = STATUS_DEFAULT[name];
+    } else {
+      el.value = "";
+    }
   });
+  prefillNextId(name);
 }
 
 function setStatus(name, msg, isError = false) {
@@ -238,9 +335,25 @@ function setStatus(name, msg, isError = false) {
 function getFormValues(name) {
   const obj = {};
   TABLES[name].columns.forEach(c => {
-    obj[c] = document.getElementById(`${name}-${c}`).value.trim();
+    const v = document.getElementById(`${name}-${c}`).value.trim();
+    obj[c] = v === "" ? null : v;  // blanks become NULL, not empty strings
   });
   return obj;
+}
+
+// Block submission when a required field is blank; returns true if OK to send.
+function validateRequired(name) {
+  const optional = OPTIONAL[name] || [];
+  for (const col of TABLES[name].columns) {
+    if (optional.includes(col)) continue;
+    const el = document.getElementById(`${name}-${col}`);
+    if (!el.value.trim()) {
+      setStatus(name, `"${col}" is required — please fill it in.`, true);
+      el.focus();
+      return false;
+    }
+  }
+  return true;
 }
 
 async function loadRecords(name) {
@@ -249,17 +362,20 @@ async function loadRecords(name) {
   try {
     const res = await fetch(`/api/${name.toLowerCase()}`);
     const rows = await res.json();
+    cache[name] = rows;
     tbody.innerHTML = "";
     rows.forEach(row => {
       const tr = document.createElement("tr");
       tr.innerHTML = TABLES[name].columns.map(c => `<td>${row[c] ?? ""}</td>`).join("");
       tr.onclick = () => {
         TABLES[name].columns.forEach(c => {
-          document.getElementById(`${name}-${c}`).value = row[c] ?? "";
+          document.getElementById(`${name}-${c}`).value = row[c] == null ? "" : String(row[c]);
         });
       };
       tbody.appendChild(tr);
     });
+    // Keep dependent foreign-key dropdowns in sync with the fresh data.
+    refreshDependents(name);
     setStatus(name, `Loaded ${rows.length} record(s).`);
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="${TABLES[name].columns.length}">Error loading records.</td></tr>`;
@@ -268,6 +384,7 @@ async function loadRecords(name) {
 }
 
 async function addRecord(name) {
+  if (!validateRequired(name)) return;
   const body = getFormValues(name);
   try {
     const res = await fetch(`/api/${name.toLowerCase()}`, {
@@ -278,14 +395,15 @@ async function addRecord(name) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Insert failed");
     setStatus(name, "Record added.");
+    await loadRecords(name);
     clearForm(name);
-    loadRecords(name);
   } catch (e) {
     setStatus(name, "Error: " + e.message, true);
   }
 }
 
 async function updateRecord(name) {
+  if (!validateRequired(name)) return;
   const body = getFormValues(name);
   const pk = TABLES[name].pk;
   const pkValue = body[pk];
@@ -322,12 +440,68 @@ async function deleteRecord(name) {
   }
 }
 
+// ---- workflow actions ----
+
+// Offers tab: run AwardOffer for the offer currently in the form.
+async function awardOffer() {
+  const offerId = document.getElementById("Offers-offer_id").value.trim();
+  if (!offerId) {
+    return setStatus("Offers", "Click an offer row first, then Award this offer.", true);
+  }
+  try {
+    const res = await fetch(`/api/award?offer_id=${encodeURIComponent(offerId)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Award failed");
+    setStatus("Offers", data.message || "Offer awarded.");
+    // The workflow touches offers, jobs and contracts — refresh all three.
+    await loadRecords("Offers");
+    await loadRecords("Jobs");
+    await loadRecords("Contracts");
+  } catch (e) {
+    setStatus("Offers", "Error: " + e.message, true);
+  }
+}
+
+// Contracts tab: mark the selected contract Completed or Cancelled.
+async function setContractStatus(newStatus) {
+  const name = "Contracts";
+  const pk = TABLES[name].pk;
+  const pkValue = document.getElementById(`${name}-${pk}`).value.trim();
+  if (!pkValue) {
+    return setStatus(name, "Click a contract row first, then use these buttons.", true);
+  }
+  const body = getFormValues(name);
+  body.status = newStatus;
+  try {
+    const res = await fetch(`/api/contracts?pk=${encodeURIComponent(pkValue)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Update failed");
+    setStatus(name, `Contract ${pkValue} marked ${newStatus}.`);
+    await loadRecords("Contracts");
+    await loadRecords("Jobs");
+  } catch (e) {
+    setStatus(name, "Error: " + e.message, true);
+  }
+}
+
 // ---- init ----
 buildNav();
 Object.entries(TABLES).forEach(([name, def]) => buildTableTab(name, def));
 buildDashboardTab();
 document.querySelector(".tab").classList.add("active");
-Object.keys(TABLES).forEach(name => loadRecords(name));
+
+(async function init() {
+  // Load the source tables first so the foreign-key dropdowns can be filled.
+  for (const name of Object.keys(TABLES)) {
+    await loadRecords(name);
+  }
+  // Set status defaults and the next-id prefill on every entry form.
+  Object.keys(TABLES).forEach(name => clearForm(name));
+})();
 </script>
 </body>
 </html>

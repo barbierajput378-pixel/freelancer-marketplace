@@ -28,7 +28,8 @@ CREATE TABLE Jobs (
     client_id INT NOT NULL,
     title VARCHAR(150) NOT NULL,
     budget_max DECIMAL(10,2) CHECK (budget_max > 0),
-    status VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'Open',
+    CONSTRAINT chk_jobs_status CHECK (status IN ('Open', 'Awarded', 'Completed', 'Cancelled')),
     FOREIGN KEY (client_id) REFERENCES Clients(client_id)
 );
 
@@ -38,7 +39,8 @@ CREATE TABLE Offers (
     freelancer_id INT NOT NULL,
     offer_amount DECIMAL(10,2) CHECK (offer_amount > 0),
     proposed_duration INT CHECK (proposed_duration > 0),
-    status VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'Pending',
+    CONSTRAINT chk_offers_status CHECK (status IN ('Pending', 'Selected', 'Rejected')),
     FOREIGN KEY (job_id) REFERENCES Jobs(job_id),
     FOREIGN KEY (freelancer_id) REFERENCES Freelancers(freelancer_id)
 );
@@ -48,7 +50,8 @@ CREATE TABLE Contracts (
     job_id INT UNIQUE NOT NULL,
     freelancer_id INT NOT NULL,
     final_amount DECIMAL(10,2) CHECK (final_amount > 0),
-    status VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'In Progress',
+    CONSTRAINT chk_contracts_status CHECK (status IN ('In Progress', 'Completed', 'Cancelled')),
     FOREIGN KEY (job_id) REFERENCES Jobs(job_id),
     FOREIGN KEY (freelancer_id) REFERENCES Freelancers(freelancer_id)
 );
@@ -204,6 +207,55 @@ BEGIN
     RETURN avg_amount;
 END $$
 
+-- AwardOffer — "select an offer" workflow in one transaction.
+-- (Must be a procedure, not a trigger: it updates the same Offers table that
+--  would fire the trigger, which MySQL forbids.)
+CREATE PROCEDURE AwardOffer(IN p_offer_id INT)
+BEGIN
+    DECLARE v_job_id          INT;
+    DECLARE v_freelancer_id   INT;
+    DECLARE v_offer_amount    DECIMAL(10,2);
+    DECLARE v_offer_status    VARCHAR(20);
+    DECLARE v_job_status      VARCHAR(20);
+    DECLARE v_new_contract_id INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT job_id, freelancer_id, offer_amount, status
+      INTO v_job_id, v_freelancer_id, v_offer_amount, v_offer_status
+      FROM Offers WHERE offer_id = p_offer_id FOR UPDATE;
+
+    IF v_job_id IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot award: offer not found.';
+    END IF;
+    IF v_offer_status <> 'Pending' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot award: this offer is not Pending.';
+    END IF;
+
+    SELECT status INTO v_job_status FROM Jobs WHERE job_id = v_job_id FOR UPDATE;
+    IF v_job_status <> 'Open' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot award: the job is not Open.';
+    END IF;
+
+    UPDATE Offers SET status = 'Selected' WHERE offer_id = p_offer_id;
+    UPDATE Offers SET status = 'Rejected'
+      WHERE job_id = v_job_id AND offer_id <> p_offer_id AND status = 'Pending';
+
+    SELECT COALESCE(MAX(contract_id), 0) + 1 INTO v_new_contract_id FROM Contracts;
+    INSERT INTO Contracts (contract_id, job_id, freelancer_id, final_amount, status)
+    VALUES (v_new_contract_id, v_job_id, v_freelancer_id, v_offer_amount, 'In Progress');
+
+    UPDATE Jobs SET status = 'Awarded' WHERE job_id = v_job_id;
+
+    COMMIT;
+END $$
+
 -- ---------- TRIGGERS ----------
 CREATE TRIGGER before_insert_jobs
 BEFORE INSERT ON Jobs
@@ -252,6 +304,40 @@ FOR EACH ROW
 BEGIN
     IF OLD.status = 'Selected' THEN
         UPDATE Jobs SET status = 'Open' WHERE job_id = OLD.job_id;
+    END IF;
+END $$
+
+-- Reject an offer above the job budget or on a job that is not Open.
+CREATE TRIGGER before_insert_offers
+BEFORE INSERT ON Offers
+FOR EACH ROW
+BEGIN
+    DECLARE v_budget DECIMAL(10,2);
+    DECLARE v_status VARCHAR(20);
+
+    SELECT budget_max, status INTO v_budget, v_status
+      FROM Jobs WHERE job_id = NEW.job_id;
+
+    IF v_status IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot add offer: that job does not exist.';
+    END IF;
+    IF v_status <> 'Open' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot add offer: the job is not Open.';
+    END IF;
+    IF NEW.offer_amount > v_budget THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot add offer: offer amount exceeds the job budget.';
+    END IF;
+END $$
+
+-- Completing/cancelling a contract flows back to the job.
+CREATE TRIGGER after_update_contracts
+AFTER UPDATE ON Contracts
+FOR EACH ROW
+BEGIN
+    IF NEW.status = 'Completed' AND OLD.status <> 'Completed' THEN
+        UPDATE Jobs SET status = 'Completed' WHERE job_id = NEW.job_id;
+    ELSEIF NEW.status = 'Cancelled' AND OLD.status <> 'Cancelled' THEN
+        UPDATE Jobs SET status = 'Open' WHERE job_id = NEW.job_id;
     END IF;
 END $$
 
