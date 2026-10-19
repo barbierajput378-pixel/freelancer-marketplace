@@ -238,7 +238,7 @@ function buildTableTab(name, def) {
         <button class="action secondary" onclick="clearForm('${name}')">Clear Form</button>
         <button class="action secondary" onclick="loadRecords('${name}')">Refresh Table</button>
       </div>
-      <div class="status" id="${name}-status"></div>
+      <div class="status" id="${name}-msg"></div>
     </div>
     <div class="panel">
       <h2>${name} — Records</h2>
@@ -327,7 +327,7 @@ function clearForm(name) {
 }
 
 function setStatus(name, msg, isError = false) {
-  const el = document.getElementById(`${name}-status`);
+  const el = document.getElementById(`${name}-msg`);
   el.textContent = msg;
   el.style.color = isError ? "#d9534f" : "#94a1b8";
 }
